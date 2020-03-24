@@ -1,7 +1,7 @@
 # Latent Space Model for Road Networks
 
 ## Introduction
-This is my implementation of the well known algorithm for traffic forecast; the Latent Space Model for Road Networks (**LSMRN**).
+This is my implementation of the well known algorithm for traffic forecast; the [Latent Space Model for Road Networks](http://www-scf.usc.edu/~dingxiod/Papers/deng-kdd16.pdf) (**LSMRN**).
 
 ## Some considerations
 Here I try to adapt **LSMRN** to work with time series in general.
