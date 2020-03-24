@@ -10,6 +10,7 @@
 
  1) split data [0:99], [100,199], ...
     this size is arbitrry
+    $x + 1$
 
  2) generate adjency matrices G_1, G_2, ... from the splits
     i) see data as path graph, then construct adj
