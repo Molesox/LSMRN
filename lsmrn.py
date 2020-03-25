@@ -13,6 +13,8 @@ from itertools import count
         vi) gamma regularization param
         vii) max iterations
 '''
+def mape(y_true, y_pred):
+    return np.mean(np.abs((y_true - y_pred) / y_true)) * 100
 
 class LSMRN:
 
@@ -51,22 +53,38 @@ class LSMRN:
         return D
 
     def save(self):
+        
+        for ts, pred in enumerate(self.preds):
+                pred = [item for sublist in pred for item in sublist]
+                np.savetxt(self.outPath + str(ts) + "pred.txt", pred)
 
-        for i, pred in enumerate(self.preds):
-            np.savetxt(self.outPath + str(i) + "pred.txt", *pred)
-
+    def center(self,dat):
+        mean = np.mean(dat)
+        if mean > 0:
+            return dat - mean
+            
     def forecast(self):
         
         window = int(self.params["pred_steps"]/self.params["snap_size"])
         preds = [[] for _ in range(self.nbTTS)]
-        Umats = self.Umats
-
-        for ts, A, B in zip(count(), self.Amats, self.Bmats):
+       
+        for ts, A, B, U in zip(count(), self.Amats, self.Bmats, self.Umats):
+            Aa = A
             for w in range(window):
-                preds[ts].append((Umats[ts][-1].dot(A)).dot(B).dot((Umats[ts][-1].dot(A)).T))
+                newG = (U[-2].dot(Aa)).dot(B).dot((U[-2].dot(Aa)).T)
+                pred = np.diag(newG, 1)
+                preds[ts].append(pred)
+                Aa = Aa.dot(A)
         
-        self.preds = preds
-        self.unshiftPred()
+        self.preds = preds.copy()
+        steps = self.params["pred_steps"] - 2
+
+        for ts, pred in zip(self.data, self.preds):
+
+            pred = [item for sublist in pred for item in sublist]
+            print(mape(ts[-steps:], pred))
+        # self.unshiftPred()
+
         
     def fit(self):
 
@@ -104,27 +122,33 @@ class LSMRN:
                     + lmbda * D.dot(self.Umats[ts][t])
                     + gamma * (self.Umats[ts][t] + self.Umats[ts][t].dot(self.Amats[ts]).dot(self.Amats[ts].T))
 
-                    self.Umats[ts][t] *= np.sqrt(np.sqrt(np.nan_to_num(np.divide(nomiG , denoG))))
+                    self.Umats[ts][t] *= np.sqrt(np.sqrt((np.divide(nomiG , denoG))))
     
                 # update B
-                utgu = lambda U, G, Y: ((U.T).dot(Y * G)).dot(U)
-                utuutu = lambda B: lambda U, Y: U.T.dot(Y * (U.dot(B).dot(U.T))).dot(U) # curry
+                utgu = lambda Uu, Gg, Yy: ((Uu.T).dot(Yy * Gg)).dot(Uu)
+                utuutu = lambda Bb: lambda Uu, Yy: Uu.T.dot(Yy * (Uu.dot(Bb).dot(Uu.T))).dot(Uu) # curry
                 utubutu = utuutu(self.Bmats[ts])
 
                 # formula [8]
                 nomiB = sum(map(utgu, self.Umats[ts], gmats, ymats))
                 denoB = sum(map(utubutu, self.Umats[ts], ymats))
-                self.Bmats[ts] *= np.nan_to_num(np.divide(nomiB,denoB))
+                self.Bmats[ts] *= (np.divide(nomiB,denoB))
                
                 # update A
                 # formula [9]
                 nomiA = sum([self.Umats[ts][i - 1].T.dot(self.Umats[ts][i]) for i in range(1, len(self.Umats[ts]))])
                 denoA = sum([self.Umats[ts][i - 1].T.dot(self.Umats[ts][i - 1]).dot(self.Amats[ts]) for i in range(1, len(self.Umats[ts]))])
-                self.Amats[ts] *= np.nan_to_num(np.divide(nomiA,denoA))
+                self.Amats[ts] *= (np.divide(nomiA,denoA))
 
-                if it > 100 and it % 3 == 0 and np.linalg.norm(self.Amats[ts] - oldA) < 1e-3:
-                    print("converged in {} iterations".format(it))
-                    converged = True
+                if it > 100 and it % 3 == 0:
+
+                    conv = np.linalg.norm(self.Amats[ts] - oldA)
+                    print("conv {}".format(conv))
+
+                    if conv < 1e-3:
+                        print("converged in {} iterations".format(it))
+                        converged = True
+
                 it = it + 1
                 
 
@@ -138,7 +162,7 @@ class LSMRN:
         kdim = self.params["Kdim"]
 
         for i in range(self.nbTTS):
-            Umats[i] = [abs(np.random.randn(size, kdim)) for _ in range(NBsnaps)]
+            Umats[i] = [0.1* abs(np.random.randn(size, kdim)) for _ in range(NBsnaps)]
         
         return Umats
 
@@ -150,11 +174,12 @@ class LSMRN:
 
         W = sum([np.diag([1] * (size - x), k=(x)) for x in range(khop)])
         Whop = [W for _ in range(self.nbTTS)]
+        
         return Whop
 
     def randomMat(self):
         Kdim = self.params["Kdim"]
-        X = abs(np.random.randn(Kdim, Kdim))
+        X = 0.1* abs(np.random.randn(Kdim, Kdim))
         return [X for _ in range(self.nbTTS)]
 
     def indicationMat(self):
@@ -164,7 +189,7 @@ class LSMRN:
             Ymats[i] = [np.zeros(G.shape) for G in Gmat]
             for j, G in enumerate(Gmat):
                 Ymats[i][j][G.nonzero()] = 1
-
+        
         return Ymats
 
     def adjMatrices(self):
@@ -172,7 +197,7 @@ class LSMRN:
         Gmats = [[] for _ in range(self.nbTTS)]
         for i, snap in enumerate(self.snapshots):
             Gmats[i] = list(map(np.diag, snap))
-
+        
         return Gmats
 
     def snaps(self):
@@ -196,7 +221,7 @@ class LSMRN:
         for i, ts in enumerate(self.train):
             minVals[i] = np.amin(ts)
             if minVals[i] < 0:
-                self.train[i] = ts + abs(minVals[i]) + 1
+                self.train[i] += (abs(minVals[i]) + 1)
 
         return minVals
 
@@ -228,12 +253,12 @@ class LSMRN:
 if __name__ == "__main__":
 
     param = {
-        "snap_size": 200,
-        "pred_steps": 200,
-        "prox_mat": 5,
+        "snap_size": 150,
+        "pred_steps": (300),
+        "prox_mat": 22,
         "Kdim": 40,
-        "lambda": 1000,
-        "gamma": 0.0001,
+        "lambda": 2e2,
+        "gamma": 2e-4,
         "maxiter": 800
     }
 
