@@ -2,6 +2,9 @@ import numpy as np
 from itertools import count
 from matplotlib import pyplot as plt
 
+def rmse(y, y_pred):
+    return np.sqrt(np.mean(np.square(y - y_pred)))
+
 inputPath = "data/input/"
 outputPath = "data/output/"
 
@@ -9,14 +12,14 @@ outputPath = "data/output/"
 # ---------------------------------------------------------------
 
 # get first time series
-data = np.loadtxt(inputPath + "electricity_normal.txt")[:, 3]
+data = np.loadtxt(inputPath + "electricity_normal.txt")[:,1]
 
 #first just take a look at the time series:
 # plt.plot(data)
 # plt.show()
 
 # split into train and test
-SPLIT = 200
+SPLIT = 100
 train = data[0 : -SPLIT]
 
 # negative values are not supported, shift
@@ -32,12 +35,16 @@ snapshots = [train[x : x + SPLIT] for x in range(0, len(train), SPLIT)]
 # ---------------------------------------------------------------
 
 # generate 1-over diagonal matrices.
-Gmats = list(map(np.diag, snapshots, [1] * len(snapshots)))
+Gmats = list(map(np.diag, snapshots))
 
 # generate indication matrices with Yij = 1 iif Gij != 0
 Ymats = [np.zeros(G.shape) for G in Gmats]
 for i, G in enumerate(Gmats):
     Ymats[i][G.nonzero()] = 1
+    # Ymats[i][-1][-1] = 1
+
+
+
 
 # PART III ------------------------------------------------------
 # ---------------------------------------------------------------
@@ -61,7 +68,7 @@ for i, G in enumerate(Gmats):
 # as we'll get (-2) in the diagonal and other proximity
 # matrices that I've seen set a min threeshold of 0.
 
-Whop = np.diag([1] * SPLIT, k=1) + np.diag([1] * (SPLIT - 1), k=2)
+Whop = sum([np.diag([1] * (SPLIT - x), k=(x)) for x in range(6)])
 Wprof = None # soon
 W = Whop
 
@@ -72,10 +79,18 @@ W = Whop
 Kdim = 40 # latent space dimension
 lmbda = 2e3 # regularization param
 gamma = 2e-4 # regularization param
-D = W # in case I change my mind about laplacian
+D = np.zeros((W.shape)) 
+np.fill_diagonal(D, np.sum(W,0))
+
+
+
+# D = W # in case I change my mind about laplacian
 
 # initialisation of U_t, B and A randomly
-Umats = [abs(np.random.randn(SPLIT + 1, Kdim))] * len(Gmats)
+Umats = [abs(np.random.randn(SPLIT, Kdim))] * len(Gmats)
+test = Umats[-1].copy()
+
+
 A = abs(np.random.randn(Kdim, Kdim))
 B = abs(np.random.randn(Kdim, Kdim))
 
@@ -86,10 +101,12 @@ it = 0
 MAXITER = 400
 converged = False
 while it < MAXITER and not converged:
-
-    oldA = A # for convergence
+    # print("iter = ", it)
+    oldA = A.copy() # for convergence
+    # oldB = B.copy()
     
     for t, Y, G, U in zip(count(), Ymats, Gmats, Umats):
+        # print("t = ", t)
         # in the pseudo-code U_t-1 and U_t+1 are not
         # defined for 1st & last iteration
         if t == 0 or t == len(Gmats) - 1:
@@ -102,10 +119,11 @@ while it < MAXITER and not converged:
 
         denoG = (Y * (U.dot(B).dot(U.T))).dot(U.dot(B.T) + U.dot(B))
         + lmbda * D.dot(U)
-        + gamma * (U + U.dot(A).dot(A.T))
+        + gamma * (U + U.dot(A).dot(A.T))      
 
-        U = U * np.sqrt(np.sqrt(nomiG/denoG))  
-
+        U *= np.sqrt(np.sqrt(np.nan_to_num(np.divide(nomiG , denoG))))  
+    
+    
     # ---------------------------------------------------------------
     # update B
     utgu = lambda U, G, Y: ((U.T).dot(Y * G)).dot(U)
@@ -115,16 +133,19 @@ while it < MAXITER and not converged:
     # formula [8]
     nomiB = sum(map(utgu, Umats, Gmats, Ymats))
     denoB = sum(map(utubutu, Umats, Ymats))
-    B = B * (nomiB/denoB)
+    B *= np.nan_to_num(np.divide(nomiB,denoB))
+    # Bbis = B.copy()
+  
 
     # ---------------------------------------------------------------
     # update A
     # formula [9]
     nomiA = sum([Umats[i - 1].T.dot(Umats[i]) for i in range(1, len(Umats))])
     denoA = sum([Umats[i - 1].T.dot(Umats[i - 1]).dot(A) for i in range(1, len(Umats))])
-    A = A * (nomiA/denoA)
-    
-    if it > 100 and np.linalg.norm(A - oldA) < 1e-4:
+    A *= np.nan_to_num(np.divide(nomiA,denoA))
+    Abis = A.copy()
+
+    if it > 100 and it%5==0 and np.linalg.norm(oldA - Abis) <1e-3 :
         print("converged in {} iterations".format(it))
         converged = True
     it = it + 1
@@ -133,10 +154,20 @@ while it < MAXITER and not converged:
 # ---------------------------------------------------------------
 
 # forecast
-Ulast = Umats[-1]
+Ulast = Umats[-1].copy()
 pred = (Ulast.dot(A)).dot(B).dot((Ulast.dot(A)).T)
 
+print("all close {}", np.allclose(test, Ulast))
+print("norm {}".format(np.linalg.norm(test -Ulast)))
 # unshift the values
 pred = pred - minTrain
 
-np.savetxt(outputPath + str(SPLIT) + "_prediction.txt", pred)
+pred = np.diag(pred, 0)
+truth = data[-SPLIT:]
+
+print(rmse(truth,pred))
+
+plt.plot(truth, 'b', label='truth')
+plt.plot(pred, 'r')
+plt.show()
+# np.savetxt(outputPath + str(SPLIT) + "_prediction.txt", pred)

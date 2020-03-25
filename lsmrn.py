@@ -35,11 +35,38 @@ class LSMRN:
         self.Ymats = self.indicationMat()
 
         self.W = self.proxMat()
-        self.D = self.W.copy()
+        self.D = self.laplacian()
 
         self.Umats = self.makeU()
-        self.Amats = []
-        self.Bmats = []
+        self.Amats = self.randomMat()
+        self.Bmats = self.randomMat()
+
+        self.preds = None
+    
+    def laplacian(self):
+
+        D = [np.zeros((W.shape)) for W in self.W]
+        for i, W in enumerate(self.W):
+            np.fill_diagonal(D[i], np.sum(W, 0))
+        return D
+
+    def save(self):
+
+        for i, pred in enumerate(self.preds):
+            np.savetxt(self.outPath + str(i) + "pred.txt", *pred)
+
+    def forecast(self):
+        
+        window = int(self.params["pred_steps"]/self.params["snap_size"])
+        preds = [[] for _ in range(self.nbTTS)]
+        Umats = self.Umats
+
+        for ts, A, B in zip(count(), self.Amats, self.Bmats):
+            for w in range(window):
+                preds[ts].append((Umats[ts][-1].dot(A)).dot(B).dot((Umats[ts][-1].dot(A)).T))
+        
+        self.preds = preds
+        self.unshiftPred()
         
     def fit(self):
 
@@ -47,65 +74,59 @@ class LSMRN:
         lmbda = self.params["lambda"]
         gamma = self.params["gamma"]
 
-        for ts, ymats, gmats, umats, W, D in zip(
+        for ts, ymats, gmats, W, D in zip(
         count(),
         self.Ymats,
         self.Gmats,
-        self.Umats,
         self.W,
         self.D):
 
-            A = abs(np.random.randn(Kdim, Kdim))
-            B = abs(np.random.randn(Kdim, Kdim))
-
             it = 0
-            MAXITER = 400
+            MAXITER = self.params["maxiter"]
             converged = False
             while it < MAXITER and not converged:
 
-                oldA = A # for convergence
+                oldA = self.Amats[ts].copy() # for convergence
 
-                for t, Y, G, U in zip(count(), ymats, gmats, umats):
+                for t, Y, G in zip(count(), ymats, gmats):
                     # in the pseudo-code U_t-1 and U_t+1 are not
                     # defined for 1st & last iteration
                     if t == 0 or t == len(gmats) - 1:
                         continue
 
                     # formula [7]
-                    nomiG = (Y * G).dot(U).dot(B.T)
-                    + (Y.T * G.T).dot(U).dot(B)
-                    + 0.5 * lmbda * (W + W.T).dot(U)
-                    + gamma * (umats[t - 1].dot(A) + umats[t + 1].dot(A.T))
+                    nomiG = (Y * G).dot(self.Umats[ts][t]).dot(self.Bmats[ts].T)
+                    + (Y.T * G.T).dot(self.Umats[ts][t]).dot(self.Bmats[ts])
+                    +  lmbda * (W + W.T).dot(self.Umats[ts][t])
+                    + gamma * (self.Umats[ts][t - 1].dot(self.Amats[ts]) + self.Umats[ts][t + 1].dot(self.Amats[ts].T))
 
-                    denoG = (Y * (U.dot(B).dot(U.T))).dot(U.dot(B.T) + U.dot(B))
-                    + lmbda * D.dot(U)
-                    + gamma * (U + U.dot(A).dot(A.T))
+                    denoG = (Y * (self.Umats[ts][t].dot(self.Bmats[ts]).dot(self.Umats[ts][t].T))).dot(self.Umats[ts][t].dot(self.Bmats[ts].T) + self.Umats[ts][t].dot(self.Bmats[ts]))
+                    + lmbda * D.dot(self.Umats[ts][t])
+                    + gamma * (self.Umats[ts][t] + self.Umats[ts][t].dot(self.Amats[ts]).dot(self.Amats[ts].T))
 
-                    U = U * np.sqrt(np.sqrt(nomiG/denoG))
-
+                    self.Umats[ts][t] *= np.sqrt(np.sqrt(np.nan_to_num(np.divide(nomiG , denoG))))
+    
                 # update B
                 utgu = lambda U, G, Y: ((U.T).dot(Y * G)).dot(U)
                 utuutu = lambda B: lambda U, Y: U.T.dot(Y * (U.dot(B).dot(U.T))).dot(U) # curry
-                utubutu = utuutu(B)
+                utubutu = utuutu(self.Bmats[ts])
 
                 # formula [8]
-                nomiB = sum(map(utgu, umats, gmats, ymats))
-                denoB = sum(map(utubutu, umats, ymats))
-                B = B * (nomiB/denoB)
-
+                nomiB = sum(map(utgu, self.Umats[ts], gmats, ymats))
+                denoB = sum(map(utubutu, self.Umats[ts], ymats))
+                self.Bmats[ts] *= np.nan_to_num(np.divide(nomiB,denoB))
+               
                 # update A
                 # formula [9]
-                nomiA = sum([umats[i - 1].T.dot(umats[i]) for i in range(1, len(umats))])
-                denoA = sum([umats[i - 1].T.dot(umats[i - 1]).dot(A) for i in range(1, len(umats))])
-                A = A * (nomiA/denoA)
+                nomiA = sum([self.Umats[ts][i - 1].T.dot(self.Umats[ts][i]) for i in range(1, len(self.Umats[ts]))])
+                denoA = sum([self.Umats[ts][i - 1].T.dot(self.Umats[ts][i - 1]).dot(self.Amats[ts]) for i in range(1, len(self.Umats[ts]))])
+                self.Amats[ts] *= np.nan_to_num(np.divide(nomiA,denoA))
 
-                if it > 100 and it % 3 == 0 and np.linalg.norm(A - oldA) < 1e-4:
+                if it > 100 and it % 3 == 0 and np.linalg.norm(self.Amats[ts] - oldA) < 1e-3:
                     print("converged in {} iterations".format(it))
                     converged = True
                 it = it + 1
-
-            self.Amats.append(A)
-            self.Bmats.append(B)
+                
 
 
     def makeU(self):
@@ -117,7 +138,7 @@ class LSMRN:
         kdim = self.params["Kdim"]
 
         for i in range(self.nbTTS):
-            Umats[i] = [abs(np.random.randn(size + 1, kdim)) for _ in range(NBsnaps)]
+            Umats[i] = [abs(np.random.randn(size, kdim)) for _ in range(NBsnaps)]
         
         return Umats
 
@@ -127,9 +148,14 @@ class LSMRN:
         size = self.params["snap_size"]
         assert type(khop) == int and khop > 0 and khop < size
 
-        W = sum([np.diag([1] * (size - x), k=(x + 1)) for x in range(khop)])
+        W = sum([np.diag([1] * (size - x), k=(x)) for x in range(khop)])
         Whop = [W for _ in range(self.nbTTS)]
         return Whop
+
+    def randomMat(self):
+        Kdim = self.params["Kdim"]
+        X = abs(np.random.randn(Kdim, Kdim))
+        return [X for _ in range(self.nbTTS)]
 
     def indicationMat(self):
 
@@ -145,7 +171,7 @@ class LSMRN:
 
         Gmats = [[] for _ in range(self.nbTTS)]
         for i, snap in enumerate(self.snapshots):
-            Gmats[i] = list(map(np.diag, snap, [1] * len(snap)))
+            Gmats[i] = list(map(np.diag, snap))
 
         return Gmats
 
@@ -160,13 +186,17 @@ class LSMRN:
 
         return snaps
 
+    def unshiftPred(self):
+        for i, minVal in enumerate(self.shiftVals):
+            self.preds[i] -= (minVal + 1)
+
     def shiftTrain(self):
 
         minVals = [float('inf')] * self.nbTS
         for i, ts in enumerate(self.train):
             minVals[i] = np.amin(ts)
             if minVals[i] < 0:
-                ts = ts + abs(minVals[i]) + 1
+                self.train[i] = ts + abs(minVals[i]) + 1
 
         return minVals
 
@@ -178,7 +208,9 @@ class LSMRN:
         data = np.loadtxt(self.inPath)
         if data.shape[0] > data.shape[1]:
             data = data.T
-        return data
+            print("data {}".format(data.shape))
+            
+        return data[0:1,:]
 
     def checkParameters(self, params:dict):
         for key in params.keys():
@@ -196,13 +228,13 @@ class LSMRN:
 if __name__ == "__main__":
 
     param = {
-        "snap_size": 100,
-        "pred_steps": 100,
-        "prox_mat": 3,
-        "Kdim": 10,
-        "lambda": 2e3,
-        "gamma": 2e-4,
-        "maxiter": 400
+        "snap_size": 200,
+        "pred_steps": 200,
+        "prox_mat": 5,
+        "Kdim": 40,
+        "lambda": 1000,
+        "gamma": 0.0001,
+        "maxiter": 800
     }
 
     inputPath = "data/input/electricity_normal.txt"
@@ -210,3 +242,5 @@ if __name__ == "__main__":
 
     myModel = LSMRN(inputPath, outputPath, param)
     myModel.fit()
+    myModel.forecast()
+    myModel.save()
