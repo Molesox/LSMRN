@@ -15,14 +15,14 @@ outputPath = "data/output/"
 # ---------------------------------------------------------------
 
 # get first time series
-data = np.loadtxt(inputPath + "electricity_normal.txt")[:,3]
+data = np.loadtxt(inputPath + "electricity_normal.txt")[:,0]
 
 # first, just take a look at the time series:
 # plt.plot(data)
 # plt.show()
 
 # split into train and test
-SPLIT = 300
+SPLIT = 50
 train = data[0 : -SPLIT]
 
 # negative values are not supported, shift
@@ -31,7 +31,7 @@ if minTrain < 0:
     minTrain = abs(minTrain) + 1
     train += minTrain
 
-SNAP = 100
+SNAP = 10
 # split train data in list of snapshots. [[0:49], [50,99]....]
 snapshots = [train[x : x + SNAP] for x in range(0, len(train), SNAP)]
 
@@ -47,7 +47,7 @@ for i, G in enumerate(Gmats):
     Ymats[i][G.nonzero()] = 1
 
 # proximity matrix W using k-hop simil. (prox-hop)
-prox = 10
+prox = 2
 Whop = sum([np.diag([1] * (SNAP - x), k=x) for x in range(prox)])
 Wprof = None # soon
 W = Whop
@@ -56,19 +56,19 @@ W = Whop
 # ---------------------------------------------------------------
 
 # constants
-Kdim = 20 # latent space dimension
-lmbda = 2e3 # regularization param
-gamma = 2e-4 # regularization param
+Kdim = 10 # latent space dimension
+lmbda = 1e-3 # regularization param
+gamma = 2e-3 # regularization param
 
 # Laplacian smoothing
 D = np.zeros((W.shape)) 
 np.fill_diagonal(D, np.sum(W,0))
 
 # initialisation of U_t, B and A randomly
-Umats = [0.5 * abs(np.random.randn(SNAP, Kdim))+1] * len(Gmats)
+Umats = [0.5 * (abs(np.zeros((SNAP, Kdim))) + 1)] * len(Gmats)
 
-A = 0.5 * abs(np.random.randn(Kdim, Kdim))+1
-B = 0.5 * abs(np.random.randn(Kdim, Kdim))+1
+A = 0.5 * (abs(np.zeros((Kdim, Kdim))) + 1)
+B = 0.5 * (abs(np.zeros((Kdim, Kdim))) + 1)
 
 # ---------------------------------------------------------------
 # update U matrices
@@ -89,14 +89,8 @@ while it < MAXITER and not converged:
             continue
 
         # formula [7]
-        nomiG = (Y * G).dot(U).dot(B.T)
-        + (Y.T * G.T).dot(U).dot(B)
-        + 0.5 * lmbda * (W + W.T).dot(U)
-        + gamma * (Umats[t - 1].dot(A) + Umats[t + 1].dot(A.T))
-
-        denoG = (Y * (U.dot(B).dot(U.T))).dot(U.dot(B.T) + U.dot(B))
-        + lmbda * D.dot(U)
-        + gamma * (U + U.dot(A).dot(A.T))      
+        nomiG = (Y * G).dot(U).dot(B.T) + (Y.T * G.T).dot(U).dot(B) + 0.5 * lmbda * (W + W.T).dot(U) + gamma * (Umats[t - 1].dot(A) + Umats[t + 1].dot(A.T))
+        denoG = (Y * (U.dot(B).dot(U.T))).dot(U.dot(B.T) + U.dot(B)) + lmbda * D.dot(U) + gamma * (U + U.dot(A).dot(A.T))      
 
         Umats[t] *= np.sqrt(np.sqrt(np.nan_to_num(np.divide(nomiG, denoG))))  
     
@@ -118,7 +112,7 @@ while it < MAXITER and not converged:
     denoA = sum([Umats[i - 1].T.dot(Umats[i - 1]).dot(A) for i in range(1, len(Umats))])
     A *= np.nan_to_num(np.divide(nomiA,denoA))
 
-    if it > 5 and it%2==0 and np.linalg.norm(oldA - A) <1e-3 :
+    if it > 50 and it%2==0 and np.linalg.norm(oldA - A) <1e-4 :
         print("converged in {} iterations".format(it))
         converged = True
     it = it + 1
