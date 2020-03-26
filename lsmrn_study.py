@@ -8,6 +8,10 @@ def rmse(y, y_pred):
 def mape(y_true, y_pred):
     return np.mean(np.abs((y_true - y_pred) / y_true)) * 100
 
+# def autocorr(x):
+#     result = np.correlate(x, x, mode='full')
+#     return result[result.size // 2:]
+
 inputPath = "data/input/"
 outputPath = "data/output/"
 
@@ -22,7 +26,7 @@ data = np.loadtxt(inputPath + "electricity_normal.txt")[:,0]
 # plt.show()
 
 # split into train and test
-SPLIT = 50
+SPLIT = 200
 train = data[0 : -SPLIT]
 
 # negative values are not supported, shift
@@ -31,7 +35,7 @@ if minTrain < 0:
     minTrain = abs(minTrain) + 1
     train += minTrain
 
-SNAP = 10
+SNAP = 50
 # split train data in list of snapshots. [[0:49], [50,99]....]
 snapshots = [train[x : x + SNAP] for x in range(0, len(train), SNAP)]
 
@@ -47,7 +51,7 @@ for i, G in enumerate(Gmats):
     Ymats[i][G.nonzero()] = 1
 
 # proximity matrix W using k-hop simil. (prox-hop)
-prox = 2
+prox = 10
 Whop = sum([np.diag([1] * (SNAP - x), k=x) for x in range(prox)])
 Wprof = None # soon
 W = Whop
@@ -56,9 +60,9 @@ W = Whop
 # ---------------------------------------------------------------
 
 # constants
-Kdim = 10 # latent space dimension
-lmbda = 1e-3 # regularization param
-gamma = 2e-3 # regularization param
+Kdim = 30 # latent space dimension
+lmbda = 0.001 # regularization param
+gamma = 2e-2 # regularization param
 
 # Laplacian smoothing
 D = np.zeros((W.shape)) 
@@ -89,28 +93,28 @@ while it < MAXITER and not converged:
             continue
 
         # formula [7]
-        nomiG = (Y * G).dot(U).dot(B.T) + (Y.T * G.T).dot(U).dot(B) + 0.5 * lmbda * (W + W.T).dot(U) + gamma * (Umats[t - 1].dot(A) + Umats[t + 1].dot(A.T))
+        nomiG = (Y * G).dot(U).dot(B.T) + (Y.T * G.T).dot(U).dot(B) + lmbda * (W + W.T).dot(U) + gamma * (Umats[t - 1].dot(A) + Umats[t + 1].dot(A.T))
         denoG = (Y * (U.dot(B).dot(U.T))).dot(U.dot(B.T) + U.dot(B)) + lmbda * D.dot(U) + gamma * (U + U.dot(A).dot(A.T))      
 
-        Umats[t] *= np.sqrt(np.sqrt(np.nan_to_num(np.divide(nomiG, denoG))))  
+        Umats[t] = Umats[t] * np.sqrt(np.sqrt(np.nan_to_num(np.divide(nomiG, denoG))))  
     
     # ---------------------------------------------------------------
     # update B
-    utgu = lambda U, G, Y: ((U.T).dot(Y * G)).dot(U)
-    utuutu = lambda B: lambda U, Y: U.T.dot(Y * (U.dot(B).dot(U.T))).dot(U) # curry
+    utgu = lambda Uu, Gg, Yy: ((Uu.T).dot(Yy * Gg)).dot(Uu)
+    utuutu = lambda Bb: lambda Uu, Yy: Uu.T.dot(Yy * (Uu.dot(Bb).dot(Uu.T))).dot(Uu) # curry
     utubutu = utuutu(B)
 
     # formula [8]
     nomiB = sum(map(utgu, Umats, Gmats, Ymats))
     denoB = sum(map(utubutu, Umats, Ymats))
-    B *= np.nan_to_num(np.divide(nomiB, denoB))
+    B = B * np.nan_to_num(np.divide(nomiB, denoB))
 
     # ---------------------------------------------------------------
     # update A
     # formula [9]
     nomiA = sum([Umats[i - 1].T.dot(Umats[i]) for i in range(1, len(Umats))])
     denoA = sum([Umats[i - 1].T.dot(Umats[i - 1]).dot(A) for i in range(1, len(Umats))])
-    A *= np.nan_to_num(np.divide(nomiA,denoA))
+    A = A * np.nan_to_num(np.divide(nomiA, denoA))
 
     if it > 50 and it%2==0 and np.linalg.norm(oldA - A) <1e-4 :
         print("converged in {} iterations".format(it))
@@ -126,7 +130,6 @@ Acopy = A.copy()
 preds = None
 firstIt = True
 for i in range(int(SPLIT/SNAP)):
-
     pred = (Ulast.dot(Acopy)).dot(B).dot((Ulast.dot(Acopy)).T)
     
     if firstIt:
