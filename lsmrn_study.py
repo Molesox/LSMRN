@@ -1,5 +1,7 @@
 import numpy as np
-from itertools import count
+import stumpy as stu
+
+from itertools import count, repeat
 from matplotlib import pyplot as plt
 
 def rmse(y_true, y_pred):
@@ -16,6 +18,12 @@ def center(dat):
     if mean > 0:
         return dat - mean
 
+def proxMat(mp, size):
+    W = np.zeros((size, size))
+    for i, val in enumerate(mp[:,0]):
+        W[i][mp[i, 1]] = 1./ val
+    return W
+
 inputPath = "data/input/"
 outputPath = "data/output/"
 
@@ -23,14 +31,14 @@ outputPath = "data/output/"
 # ---------------------------------------------------------------
 
 # get one time series
-data = np.loadtxt(inputPath + "electricity_normal.txt")[:,11]
+data = np.loadtxt(inputPath + "electricity_normal.txt")[:,14]
 
 # first, just take a look at the time series:
 plt.plot(data)
 plt.show()
 
 # split into train and test
-SPLIT = 400
+SPLIT = 200
 train = data[0 : -SPLIT]
 
 # negative values are not supported, shift
@@ -39,8 +47,8 @@ if minTrain < 0:
     minTrain = abs(minTrain) + 1
     train += minTrain
 
-SNAP = 200
 # split train data in list of snapshots. [[0:49], [50,99]....]
+SNAP = 200
 snapshots = [train[x : x + SNAP] for x in range(0, len(train), SNAP)]
 
 # PART II -------------------------------------------------------
@@ -54,23 +62,30 @@ Ymats = [np.zeros(G.shape) for G in Gmats]
 for i, G in enumerate(Gmats):
     Ymats[i][G.nonzero()] = 1
 
-# proximity matrix W using k-hop simil. (prox-hop)
-prox = 10
-Whop = sum([np.diag([1] * (SNAP - x), k=x) for x in range(prox)])
-
-# proximity matrix W using matrix profile.
-Wprof = None # soon
-
-# choose one of the above matrices
-W = Whop
-
-# PART IV -------------------------------------------------------
+# PART III ------------------------------------------------------
 # ---------------------------------------------------------------
 
+# proximity matrix W using k-hop simil. (prox-hop)
+# prox = 10
+# Whop = sum([np.diag([1] * (SNAP - x), k=x) for x in range(prox)])
+
+# proximity matrix W using matrix profile.
+windowMP = 50 # window for profile matrix
+
+Pmats = [stu.stump(snap, windowMP) for snap in snapshots]
+Wprof = sum(map(proxMat, Pmats, repeat(SNAP, len(Pmats))))
+
+# normalize
+row_sums = Wprof.sum(axis=1)
+Wprof = np.nan_to_num(Wprof / row_sums)
+
+# choose one of the above matrices
+W = Wprof
+
 # constants
-Kdim = 40 # latent space dimension
-lmbda = 0.001 # regularization param
-gamma = 2e-3 # regularization param
+Kdim = 30 # latent space dimension
+lmbda = 1e-1 # regularization param
+gamma = 2e-4 # regularization param
 
 # Laplacian smoothing
 D = np.zeros((W.shape)) 
@@ -82,6 +97,7 @@ Umats = [0.5 * (abs(np.zeros((SNAP, Kdim))) + 1)] * len(Gmats)
 A = 0.5 * (abs(np.zeros((Kdim, Kdim))) + 1)
 B = 0.5 * (abs(np.zeros((Kdim, Kdim))) + 1)
 
+# PART IV -------------------------------------------------------
 # ---------------------------------------------------------------
 # global learning
 assert len(Ymats) == len(Gmats) and len(Gmats) == len(Umats)
@@ -124,7 +140,8 @@ while it < maxiter and not converged:
     nomiA = sum([Umats[i - 1].T.dot(Umats[i]) for i in range(1, len(Umats))])
     denoA = sum([Umats[i - 1].T.dot(Umats[i - 1]).dot(A) for i in range(1, len(Umats))])
     A = A * np.nan_to_num(np.divide(nomiA, denoA))
-
+    
+    # check convergence
     if it > 50 and it % 2 == 0 and np.linalg.norm(oldA - A) < 1e-4 :
         print("converged in {} iterations".format(it))
         converged = True
@@ -135,7 +152,7 @@ while it < maxiter and not converged:
 # ---------------------------------------------------------------
 
 # forecast
-Ulast = Umats[-2]
+Ulast = Umats[-2] # because of the non-defined iterations
 Acopy = A.copy()
 preds = None
 firstIt = True
@@ -152,8 +169,8 @@ for i in range(int(SPLIT/SNAP)):
         Acopy = Acopy.dot(A)
 
 # unshift or center the time series
-preds = center(preds)
-truth = data[-(SPLIT - diag * int(SPLIT/SNAP)):]
+preds = center(preds)[: -windowMP]
+truth = center(data[-(SPLIT - diag * int(SPLIT/SNAP)): -windowMP])
 
 #metrics
 print("rmse {}".format(rmse(truth,preds)))
