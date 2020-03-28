@@ -22,7 +22,7 @@ The code has five main parts structured as follow:
    - split data in a list of snapshots, eg: [0:99], [100,199], ...
    
 2. Adjency
-   - generate adjency matrices G_1, G_2, ... from the snapshots.
+   - generate adjacency matrices G_1, G_2, ... from the snapshots.
    - create corresponding Y_t indication matrices. 
    
 
@@ -36,7 +36,7 @@ The code has five main parts structured as follow:
    - A computation
 
 5. Forecasting
-   - see output adjency matrix as planar graph
+   - see output adjacency matrix as planar graph
    - some metrics
 
 6. plots
