@@ -21,7 +21,7 @@ The code has five main parts structured as follow:
    - as negative values are not supported, we shift the train dataset.
    - split data in a list of snapshots, eg: [0:99], [100,199], ...
    
-2. Adjency
+2. Adjacency
    - generate adjacency matrices G_1, G_2, ... from the snapshots.
    - create corresponding Y_t indication matrices. 
    
