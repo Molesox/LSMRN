@@ -1,4 +1,7 @@
 /.lsmrn
 /.vscode
 /data/output
+/__pycache__
 deng-kdd16.pdf
+lsmrn.py
+mp.py
