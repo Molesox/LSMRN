@@ -34,8 +34,8 @@ outputPath = "data/output/"
 data = np.loadtxt(inputPath + "electricity_normal.txt")[:,14]
 
 # first, just take a look at the time series:
-plt.plot(data)
-plt.show()
+# plt.plot(data)
+# plt.show()
 
 # split into train and test
 SPLIT = 200
