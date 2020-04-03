@@ -1,11 +1,14 @@
 import numpy as np
 import stumpy as stu
-import json
+import pickle
 from itertools import repeat, count
 
 class Lsmrn:
 
-    def __init__(self, params):
+    def __init__(self, params, toCenter=True, toShift=False):
+
+        self.toCenter = toCenter
+        self.toShift = toShift
 
         self.data = params["time_series"]
 
@@ -20,6 +23,7 @@ class Lsmrn:
 
         self.params = params
 
+        self.minTrain = None
         self.train = self.prepareTrain()
         self.snapshots = self.makeSnaps()
 
@@ -31,12 +35,14 @@ class Lsmrn:
 
         self.fitdone = False
         self.preds = None
-        self.truth = self.makeTruth()
+        self.truth = None
 
     
     def doForecast(self):
         A, B, U = self.fit()
         self.forecast(A, B, U)
+        self.postprocess()
+        self.truth = self.makeTruth()
         self.save()
     
     def rmse(self, y_true, y_pred):
@@ -49,14 +55,18 @@ class Lsmrn:
 
     def save(self):
 
-        errors = {"rmse": self.rmse(self.truth, self.preds),
-                "mape": self.mape(self.truth, self.preds),
-                "pred": self.preds,
-                "truth": self.truth
-        }
+        self.params.pop("time_series")
+        
+        errors = {
+            "pred": self.preds,
+            "truth": self.truth,
+            "rmse": self.rmse(self.truth, self.preds),
+            "mape": self.mape(self.truth, self.preds)
+            }
         errors.update(self.params)
-        with open('results.txt','a') as f:
-            print(errors, file=f)
+
+        with open('results','ab') as f:
+            pickle.dump(errors, f)
             
     def proxMat(self, mp, size):
         W = np.zeros((size, size))
@@ -66,10 +76,13 @@ class Lsmrn:
 
     def makeTruth(self):
         split = self.split
-        snap = self.snap
-        wmp = self.mpWindow
         diag = self.diag
-        return self.center(self.data[-(split - diag * int(split/snap)): -wmp])
+
+        until = diag * int(split/self.snap)
+        if until != 0 :
+            return self.data[- split: -until]
+        else:
+            return self.data[- split:]
 
     def fit(self):
 
@@ -80,10 +93,10 @@ class Lsmrn:
         gamma = self.gamma
         lmbda = self.lmbda
 
-        Umats = [0.5 * (abs(np.zeros((SNAP, Kdim))) + 1)] * len(self.Gmats)
+        Umats = [0.5 *  (abs(np.random.randn(SNAP, Kdim)))] * len(self.Gmats)
 
-        A = 0.5 * (abs(np.zeros((Kdim, Kdim))) + 1)
-        B = 0.5 * (abs(np.zeros((Kdim, Kdim))) + 1)
+        A = 0.5 * abs(np.random.randn(Kdim, Kdim))
+        B = 0.5 * abs(np.random.randn(Kdim, Kdim))
 
         it = 0
         maxiter = 600
@@ -91,7 +104,7 @@ class Lsmrn:
 
         while it < maxiter and not converged:
         
-            oldA = A.copy() # for convergence
+            oldA =  A.copy() # for convergence
 
             # update U matrices
             for t, Y, G, U in zip(count(), self.Ymats, self.Gmats, Umats):
@@ -99,10 +112,15 @@ class Lsmrn:
                 # in the pseudo-code U_t-1 and U_t+1 are not
                 # defined for 1st & last iteration
                 if t == 0 or t == len(self.Gmats) - 1:
+
+                    nomiG = ((Y * G).dot(U)).dot(B.T) + ((Y.T * G.T).dot(U)).dot(B) + lmbda * (W + W.T).dot(U)
+                    denoG = (Y * (U.dot(B).dot(U.T))).dot(U.dot(B.T) + U.dot(B)) + lmbda * D.dot(U) + gamma * (U + U.dot(A).dot(A.T))      
+
+                    Umats[t] = Umats[t] * np.sqrt(np.sqrt(np.nan_to_num(np.divide(nomiG, denoG))))
                     continue
 
                 # formula [7]
-                nomiG = (Y * G).dot(U).dot(B.T) + (Y.T * G.T).dot(U).dot(B) + gamma * (W + W.T).dot(U) + gamma * (Umats[t - 1].dot(A) + Umats[t + 1].dot(A.T))
+                nomiG = (Y * G).dot(U).dot(B.T) + (Y.T * G.T).dot(U).dot(B) + lmbda * (W + W.T).dot(U) + gamma * (Umats[t - 1].dot(A) + Umats[t + 1].dot(A.T))
                 denoG = (Y * (U.dot(B).dot(U.T))).dot(U.dot(B.T) + U.dot(B)) + lmbda * D.dot(U) + gamma * (U + U.dot(A).dot(A.T))      
 
                 Umats[t] = Umats[t] * np.sqrt(np.sqrt(np.nan_to_num(np.divide(nomiG, denoG))))  
@@ -126,14 +144,17 @@ class Lsmrn:
             A = A * np.nan_to_num(np.divide(nomiA, denoA))
             
             # check convergence
-            if it > 50 and it % 2 == 0 and np.linalg.norm(oldA - A) < 1e-4 :
-                print("converged in {} iterations".format(it))
-                converged = True
+            if it > 50 and it % 2 == 0 :
+                diff = np.linalg.norm(oldA -  A,-2)
+
+                if diff < 1e-4:
+                    print("converged in {} iterations".format(it))
+                    converged = True
 
             it = it + 1
 
         self.fitdone = True
-        return A, B, Umats[-2]
+        return A, B, Umats[-1]
 
     def forecast(self, A, B, U):
         if not self.fitdone:
@@ -153,24 +174,35 @@ class Lsmrn:
                 preds = np.concatenate(([preds, np.diag(pred, diag)]))
                 Acopy = Acopy.dot(A)
         
-        self.preds =self.center( preds[: -self.mpWindow])
+        self.preds = preds
 
     def postprocess(self):
-        self.preds = self.center(self.preds)[: -self.mpWindow]
+        if self.toCenter:
+            self.preds = self.center(self.preds)
+        elif self.toShift:
+            self.preds = unshift(self.preds, self.minTrain)
 
     def makeLaplacian(self):
         D = np.zeros((self.Wprof.shape))
         np.fill_diagonal(D, np.sum(self.Wprof, 0))
         return D
-        
+
+    def scale(self, X, x_min, x_max):
+        nomi = (X - X.min(axis=0)) * (x_max - x_min)
+        deno = X.max(axis=0) - X.min(axis=0)
+        deno[deno==0] = 1
+        return x_min + nomi/deno 
+
     def makeProxMat(self):
+
         window = self.mpWindow
         Pmats = [stu.stump(snap, window) for snap in self.snapshots]
+        
+        for i in range(len(Pmats)):
+            Pmats[i][:,0] *= (i+1)
 
         Wprof = sum(map(self.proxMat, Pmats, repeat(self.snap, len(Pmats))))
-
-        row_sums = Wprof.sum(axis=1)
-        Wprof = np.nan_to_num(Wprof / row_sums)
+        Wprof = self.scale(Wprof, 0, 1)
         return Wprof
 
     def makeIdxMats(self):
@@ -187,19 +219,25 @@ class Lsmrn:
         return [self.train[x : x + snap] for x in range(0, len(self.train), snap)]
 
     def prepareTrain(self):
-
-        def shift(ts):
-            minVal = np.amin(ts)
-            if minVal < 0:
-                minVal = abs(minVal) + 1
-                ts += minVal
-            return ts 
-
         train = self.data[0 : -self.split]
-        return shift(train)
+        train, self.minTrain = shift(train)
+        
+        return train
 
     def center(self, dat):
         # center the time series around 0
         mean = np.mean(dat)
-        if mean > 0:
-            return dat - mean
+        return dat - mean
+
+def unshift(ts, val):
+    return ts - val
+
+def shift(ts):
+    minVal = np.amin(ts)
+    if minVal < 0:
+        minVal = abs(minVal) + 1
+        ts += minVal
+    else:
+        minVal = 0
+    
+    return ts, minVal
